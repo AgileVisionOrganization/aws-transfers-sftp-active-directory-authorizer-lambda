@@ -1,0 +1,222 @@
+service: aws-sftp-active-directory-authorizer-template
+provider:
+  name: aws
+  runtime: nodejs10.x
+  profile: addemo
+  stage: dev
+
+functions:
+  authorize:
+    handler: handler.authorize
+    role: lambdaExecutionRole
+    vpc:
+      securityGroupIds:
+        - Ref: authorizerSecurityGroup
+      subnetIds:
+        - Ref: subnet1
+        - Ref: subnet2
+    events:
+      - http:
+          path: /servers/{serverId}/users/{user}/config
+          method: GET
+          authorizer: aws_iam
+    environment:
+      SFTP_USER_ROLE_ARN: !GetAtt sftpUserRole.Arn
+      BUCKET_ARN:
+        Fn::Join:
+          - ":"
+          - - "arn"
+            - Ref: "AWS::Partition"
+            - "s3::"
+            - ${env:TRANSFER_BUCKET_NAME}
+      LDAP_DIRECTORY_NAME: sftpdemo
+      LDAP_DNS_NAME: sftpdemo.example.com
+
+resources: # CloudFormation template syntax
+  Resources:
+    vpc:
+      Type: AWS::EC2::VPC
+      Properties:
+        CidrBlock: "10.0.0.0/16"
+        EnableDnsHostnames: true
+        EnableDnsSupport: true
+    subnet1:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId:
+          Ref: vpc
+        CidrBlock: 10.0.1.0/24
+        AvailabilityZone:
+          Fn::Select:
+            - 0
+            - Fn::GetAZs: ""
+    subnet2:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId:
+          Ref: vpc
+        CidrBlock: 10.0.2.0/24
+        AvailabilityZone:
+          Fn::Select:
+            - 1
+            - Fn::GetAZs: ""
+    authorizerSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Allow LDAP connections
+        VpcId:
+          Ref: vpc
+        SecurityGroupEgress:
+          - IpProtocol: tcp
+            FromPort: 389
+            ToPort: 389
+            CidrIp: 10.0.0.0/16
+    activeDirectory:
+      Type: AWS::DirectoryService::SimpleAD
+      Properties:
+        Name: sftpdemo.example.com
+        Password: ${env:AD_ADMIN_PASSWORD}
+        Size: "Small"
+        VpcSettings:
+          SubnetIds:
+            - Ref: subnet1
+            - Ref: subnet2
+          VpcId:
+            Ref: vpc
+    lambdaExecutionRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /sftp/
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action: "sts:AssumeRole"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+    transferInvocationRole:
+      Type: AWS::IAM::Role
+      DependsOn:
+        - ApiGatewayRestApi
+      Properties:
+        Path: /sftp/
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - transfer.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: TransferCanInvokeAuthorizeApi
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - execute-api:Invoke
+                  Resource:
+                    Fn::Join:
+                      - ":"
+                      - - "arn"
+                        - Ref: "AWS::Partition"
+                        - execute-api
+                        - Ref: "AWS::Region"
+                        - Ref: "AWS::AccountId"
+                        - Fn::Join:
+                            - ""
+                            - - Ref: ApiGatewayRestApi
+                              - /${self:provider.stage}/GET/*
+          - PolicyName: TransferCanReadAuthorizeApi
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - apigateway:GET
+                  Resource: "*"
+    transferLoggingRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /sftp/
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - transfer.amazonaws.com
+              Action: sts:AssumeRole
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSTransferLoggingAccess
+    sftpUserRole:
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /sftp/
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - transfer.amazonaws.com
+              Action: "sts:AssumeRole"
+        Policies:
+          - PolicyName: SftpBucketAccessPolicy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:*
+                  Resource:
+                    Fn::Join:
+                      - ":"
+                      - - "arn"
+                        - Ref: "AWS::Partition"
+                        - "s3::"
+                        - ${env:TRANSFER_BUCKET_NAME}*
+    sftpServer:
+      Type: AWS::Transfer::Server
+      Properties:
+        IdentityProviderDetails:
+          InvocationRole:
+            Fn::GetAtt: ["transferInvocationRole", "Arn"]
+          Url:
+            Fn::Join:
+              - ""
+              - - https://
+                - Ref: ApiGatewayRestApi
+                - .execute-api.
+                - Ref: "AWS::Region"
+                - .amazonaws.com/${self:provider.stage}/
+        IdentityProviderType: "API_GATEWAY"
+        LoggingRole:
+          Fn::GetAtt: ["transferLoggingRole", "Arn"]
+    privateHostedZone:
+      Type: AWS::Route53::HostedZone
+      Properties:
+        Name: "example.com"
+        VPCs:
+          - VPCId:
+              Ref: vpc
+            VPCRegion: !Ref "AWS::Region"
+    adRecordSet:
+      Type: "AWS::Route53::RecordSet"
+      Properties:
+        HostedZoneId:
+          Ref: privateHostedZone
+        Name: sftpdemo.example.com.
+        Type: A
+        TTL: "900"
+        ResourceRecords: !GetAtt activeDirectory.DnsIpAddresses
+      DependsOn: privateHostedZone
+  #  Outputs:
+  #     NewOutput:
+  #       Description: "Description for the output"
+  #       Value: "Some output value"

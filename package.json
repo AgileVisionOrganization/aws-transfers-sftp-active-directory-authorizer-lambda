@@ -1,0 +1,30 @@
+{
+  "name": "aws-transfers-sftp-active-directory-authorizer-lambda",
+  "version": "1.0.0",
+  "description": "This is a project template for a custom identity provider for AWS Transfer for SFTP using Active Directory",
+  "main": "handler.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgileVisionCompany/aws-transfers-sftp-active-directory-authorizer-lambda.git"
+  },
+  "keywords": [
+    "aws",
+    "sftp",
+    "aws",
+    "lambda",
+    "aws",
+    "sftp"
+  ],
+  "author": "Volodymyr Rudyi",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/AgileVisionCompany/aws-transfers-sftp-active-directory-authorizer-lambda/issues"
+  },
+  "homepage": "https://github.com/AgileVisionCompany/aws-transfers-sftp-active-directory-authorizer-lambda#readme",
+  "dependencies": {
+    "ldapjs": "^1.0.2"
+  }
+}
